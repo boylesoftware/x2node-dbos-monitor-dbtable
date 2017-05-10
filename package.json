@@ -1,0 +1,34 @@
+{
+  "name": "x2node-dbos-rctrack-dbtable",
+  "version": "1.0.0-alpha.0",
+  "description": "DB table-based record collections version tracker.",
+  "keywords": [
+    "x2node",
+    "nodejs"
+  ],
+  "main": "index.js",
+  "scripts": {
+    "test": "eslint .",
+    "preversion": "npm test",
+    "postversion": "git push && git push --tags"
+  },
+  "repository": {
+    "type": "git",
+    "url": "git+https://github.com/boylesoftware/x2node-dbos-rctrack-dbtable.git"
+  },
+  "author": "Lev Himmelfarb <lev@boylesoftware.com>",
+  "license": "MIT",
+  "bugs": {
+    "url": "https://github.com/boylesoftware/x2node-dbos-rctrack-dbtable/issues"
+  },
+  "homepage": "https://github.com/boylesoftware/x2node-dbos-rctrack-dbtable#readme",
+  "engines": {
+    "node": ">=4.3.2"
+  },
+  "dependencies": {
+    "x2node-common": "^1.2.2"
+  },
+  "devDependencies": {
+    "eslint": "^3.17.1"
+  }
+}
