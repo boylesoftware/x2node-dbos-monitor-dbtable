@@ -1,9 +1,8 @@
 /**
- * Implementation of the record collections version tracker for the DBOs module
- * that uses a database table to store current record collections version
- * information.
+ * Implementation of the record collections monitor for the DBOs module that uses
+ * a database table to store current record collections version information.
  *
- * @module x2node-dbos-rctrack-dbtable
+ * @module x2node-dbos-monitor-dbtable
  * @requires module:x2node-common
  */
 'use strict';
@@ -22,25 +21,26 @@ const log = common.getDebugLogger('X2_DBO');
 
 
 /**
- * Tracker initialization completion event.
+ * Monitor initialization completion event.
  *
  * @private
- * @event module:x2node-dbos-rctrack-dbtable~DBTableRecordCollectionsTracker#ready
+ * @event module:x2node-dbos-monitor-dbtable~DBTableRecordCollectionsMonitor#ready
  * @type {string}
  */
 
 /**
- * The DB table record collections version tracker implementation.
+ * The DB table record collections monitor implementation.
  *
  * @private
  * @inner
  * @extends external:EventEmitter
- * @fires module:x2node-dbos-rctrack-dbtable~DBTableRecordCollectionsTracker#ready
+ * @implements {module:x2node-dbos.RecordCollectionsMonitor}
+ * @fires module:x2node-dbos-monitor-dbtable~DBTableRecordCollectionsMonitor#ready
  */
-class DBTableRecordCollectionsTracker extends EventEmitter {
+class DBTableRecordCollectionsMonitor extends EventEmitter {
 
 	/**
-	 * Create new unitnialized tracker instance.
+	 * Create new unitnialized monitor instance.
 	 */
 	constructor() {
 		super();
@@ -50,7 +50,7 @@ class DBTableRecordCollectionsTracker extends EventEmitter {
 	}
 
 	/**
-	 * Called when the tracker initialization is complete (the DB table is in the
+	 * Called when the monitor initialization is complete (the DB table is in the
 	 * database and is ready to be used).
 	 *
 	 * @param {external:Error} [err] Error, if could not be initialized.
@@ -66,7 +66,7 @@ class DBTableRecordCollectionsTracker extends EventEmitter {
 	}
 
 	// process record collections update
-	recordsUpdated(ctx, recordTypeNames) {
+	collectionsUpdated(ctx, recordTypeNames) {
 
 		// check if initialization error
 		if (this._initError)
@@ -78,10 +78,10 @@ class DBTableRecordCollectionsTracker extends EventEmitter {
 
 		// check if not initialized yet
 		if (!this._ready) {
-			const tracker = this;
+			const monitor = this;
 			return new Promise(resolve => {
-				tracker.on('ready', () => {
-					resolve(tracker.recordsUpdated(ctx, recordTypeNames));
+				monitor.on('ready', () => {
+					resolve(monitor.collectionsUpdated(ctx, recordTypeNames));
 				});
 			});
 		}
@@ -114,61 +114,124 @@ class DBTableRecordCollectionsTracker extends EventEmitter {
 			}
 		});
 	}
+
+	// query record collections version
+	getCollectionsVersion(tx, recordTypeNames) {
+
+		// check if initialization error
+		if (this._initError)
+			return Promise.reject(this._initError);
+
+		// check if not initialized yet
+		if (!this._ready) {
+			const monitor = this;
+			return new Promise(resolve => {
+				monitor.on('ready', () => {
+					resolve(monitor.getCollectionsVersion(tx, recordTypeNames));
+				});
+			});
+		}
+
+		// query the table
+		return new Promise((resolve, reject) => {
+			try {
+				const sql =
+					'SELECT MAX(modified_on) AS modifiedOn,' +
+					' SUM(version) AS version FROM x2rcinfo' +
+					' WHERE name' + (
+						recordTypeNames.size === 1 ?
+							' = ' + tx.dbDriver.stringLiteral(
+								recordTypeNames.values().next().value) :
+							' IN (' + Array.from(recordTypeNames).map(
+								v => tx.dbDriver.stringLiteral(v)).join(', ') +
+							')'
+					);
+				log(`executing SQL: ${sql}`);
+				let res;
+				tx.dbDriver.executeQuery(tx.connection, sql, {
+					onRow(row) {
+						if (Array.isArray(row))
+							res = {
+								modifiedOn: row[0],
+								version: row[1]
+							};
+						else
+							res = {
+								modifiedOn: row.modifiedOn,
+								version: row.version
+							};
+					},
+					onSuccess() {
+						resolve(res);
+					},
+					onError(err) {
+						common.error(`error executing SQL [${sql}]`, err);
+						reject(err);
+					}
+				});
+			} catch (err) {
+				common.error(
+					'error querying record collection version info table', err);
+				reject(err);
+			}
+		});
+	}
 }
 
 
 /**
- * Add the tracker to the specified DBO factory and initialize it.
+ * Assign the monitor to the specified DBO factory and initialize it.
  *
  * @param {module:x2node-dbos~DBOFactory} dboFactory The DBO factory, to which to
- * to add the tracker.
+ * to assign the monitor.
  * @param {module:x2node-dbos.DataSource} ds Database connection data source used
- * by the tracker to initialize the record collections version information table.
- * @returns {module:x2node-dbos.RecordCollectionsTracker} The tracker added to
+ * by the monitor to initialize the record collections version information table.
+ * @returns {module:x2node-dbos.RecordCollectionsMonitor} The monitor assigned to
  * the DBO factory.
  */
 exports.addTo = function(dboFactory, ds) {
 
-	// create the tracker
-	const tracker = new DBTableRecordCollectionsTracker();
+	// create the monitor
+	const monitor = new DBTableRecordCollectionsMonitor();
 
 	// make sure we have the table
 	ds.getConnection().then(
 		connection => {
 			try {
+				let lastSql;
 				dboFactory.dbDriver.createVersionTableIfNotExists(
 					connection, 'x2rcinfo', {
 						trace(sql) {
+							lastSql = sql;
 							log(`executing SQL: ${sql}`);
 						},
 						onSuccess() {
 							ds.releaseConnection(connection);
-							tracker.initComplete();
+							monitor.initComplete();
 						},
 						onError(err) {
 							ds.releaseConnection(connection);
 							common.error(
-								'error creating record collections version' +
-									' info table', err);
-							tracker.initComplete(err);
+								`error executing SQL [${lastSql}]`, err);
+							monitor.initComplete(err);
 						}
 					});
 			} catch (err) {
 				ds.releaseConnection(connection);
 				common.error(
 					'error creating record collections version info table', err);
-				tracker.initComplete(err);
+				monitor.initComplete(err);
 			}
 		},
 		err => {
 			common.error('error acquiring DB connection', err);
-			tracker.initComplete(err);
+			monitor.initComplete(err);
 		}
 	);
 
-	// add tracker to the DBO factory
-	dboFactory.addRecordCollectionsTracker(tracker);
+	// add monitor to the DBO factory
+	dboFactory.setRecordCollectionsMonitor(monitor);
 
 	// return it
-	return tracker;
+	return monitor;
 };
