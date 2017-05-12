@@ -162,11 +162,11 @@ class DBTableRecordCollectionsMonitor extends EventEmitter {
 					switch (lockType) {
 					case 'shared':
 						sql = tx.dbDriver.makeSelectWithLocks(
-							sql, null, TABLE_DESC);
+							sql, null, TABLE_DESCS);
 						break;
 					case 'exclusive':
 						sql = tx.dbDriver.makeSelectWithLocks(
-							sql, TABLE_DESC, null);
+							sql, TABLE_DESCS, null);
 					}
 					sql = 'SELECT' +
 						' MAX(t.modified_on) AS modifiedOn,' +
@@ -180,11 +180,11 @@ class DBTableRecordCollectionsMonitor extends EventEmitter {
 					switch (lockType) {
 					case 'shared':
 						sql = tx.dbDriver.makeSelectWithLocks(
-							sql, null, TABLE_DESC);
+							sql, null, TABLE_DESCS);
 						break;
 					case 'exclusive':
 						sql = tx.dbDriver.makeSelectWithLocks(
-							sql, TABLE_DESC, null);
+							sql, TABLE_DESCS, null);
 					}
 				}
 				log(`executing SQL: ${sql}`);
