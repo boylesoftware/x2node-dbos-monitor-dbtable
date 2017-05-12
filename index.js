@@ -8,6 +8,7 @@
  */
 'use strict';
 
+const EventEmitter = require('events');
 const common = require('x2node-common');
 
 
@@ -21,27 +22,97 @@ const log = common.getDebugLogger('X2_DBO');
 
 
 /**
- * The tracker.
+ * Tracker initialization completion event.
+ *
+ * @private
+ * @event module:x2node-dbos-rctrack-dbtable~DBTableRecordCollectionsTracker#ready
+ * @type {string}
+ */
+
+/**
+ * The DB table record collections version tracker implementation.
  *
  * @private
  * @inner
+ * @extends external:EventEmitter
+ * @fires module:x2node-dbos-rctrack-dbtable~DBTableRecordCollectionsTracker#ready
  */
-class DBTableRecordCollectionsTracker {
+class DBTableRecordCollectionsTracker extends EventEmitter {
 
+	/**
+	 * Create new unitnialized tracker instance.
+	 */
 	constructor() {
+		super();
 
 		this._ready = false;
 		this._initError = null;
 	}
 
+	/**
+	 * Called when the tracker initialization is complete (the DB table is in the
+	 * database and is ready to be used).
+	 *
+	 * @param {external:Error} [err] Error, if could not be initialized.
+	 */
 	initComplete(err) {
 
-		//...
+		if (err)
+			this._initError = err;
+		else
+			this._ready = true;
+
+		this.emit('ready');
 	}
 
+	// process record collections update
 	recordsUpdated(ctx, recordTypeNames) {
 
-		//...
+		// check if initialization error
+		if (this._initError)
+			return Promise.reject(this._initError);
+
+		// check if anything was updated
+		if (!recordTypeNames || (recordTypeNames.size === 0))
+			return;
+
+		// check if not initialized yet
+		if (!this._ready) {
+			const tracker = this;
+			return new Promise(resolve => {
+				tracker.on('ready', () => {
+					resolve(tracker.recordsUpdated(ctx, recordTypeNames));
+				});
+			});
+		}
+
+		// update the table
+		return new Promise((resolve, reject) => {
+			try {
+				let lastSql;
+				ctx.dbDriver.updateVersionTable(
+					ctx.connection, 'x2rcinfo', Array.from(recordTypeNames),
+					ctx.executedOn.toISOString(), {
+						trace(sql) {
+							lastSql = sql;
+							ctx.log(`executing SQL: ${sql}`);
+						},
+						onSuccess() {
+							resolve();
+						},
+						onError(err) {
+							common.error(
+								`error executing SQL [${lastSql}]`, err);
+							reject(err);
+						}
+					}
+				);
+			} catch (err) {
+				common.error(
+					'error updating record collection version info table', err);
+				reject(err);
+			}
+		});
 	}
 }
 
