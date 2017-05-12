@@ -21,6 +21,18 @@ const log = common.getDebugLogger('X2_DBO');
 
 
 /**
+ * Version info table descriptor.
+ *
+ * @private
+ * @constant {Array.<Object>}
+ */
+const TABLE_DESCS = [{
+	tableName: 'x2rcinfo',
+	tableAlias: 'x2rcinfo'
+}];
+
+
+/**
  * Monitor initialization completion event.
  *
  * @private
@@ -116,7 +128,7 @@ class DBTableRecordCollectionsMonitor extends EventEmitter {
 	}
 
 	// query record collections version
-	getCollectionsVersion(tx, recordTypeNames) {
+	getCollectionsVersion(tx, recordTypeNames, lockType) {
 
 		// check if initialization error
 		if (this._initError)
@@ -135,17 +147,46 @@ class DBTableRecordCollectionsMonitor extends EventEmitter {
 		// query the table
 		return new Promise((resolve, reject) => {
 			try {
-				const sql =
-					'SELECT MAX(modified_on) AS modifiedOn,' +
-					' SUM(version) AS version FROM x2rcinfo' +
-					' WHERE name' + (
-						recordTypeNames.size === 1 ?
-							' = ' + tx.dbDriver.stringLiteral(
-								recordTypeNames.values().next().value) :
-							' IN (' + Array.from(recordTypeNames).map(
-								v => tx.dbDriver.stringLiteral(v)).join(', ') +
-							')'
-					);
+				const filterExpr = 'name' + (
+					recordTypeNames.size === 1 ?
+						' = ' + tx.dbDriver.stringLiteral(
+							recordTypeNames.values().next().value) :
+						' IN (' + Array.from(recordTypeNames).map(
+							v => tx.dbDriver.stringLiteral(v)).join(', ') +
+						')'
+				);
+				let sql;
+				if (lockType && !tx.dbDriver.supportsRowLocksWithAggregates()) {
+					sql = 'SELECT modified_on, version FROM x2rcinfo WHERE ' +
+						filterExpr;
+					switch (lockType) {
+					case 'shared':
+						sql = tx.dbDriver.makeSelectWithLocks(
+							sql, null, TABLE_DESC);
+						break;
+					case 'exclusive':
+						sql = tx.dbDriver.makeSelectWithLocks(
+							sql, TABLE_DESC, null);
+					}
+					sql = 'SELECT' +
+						' MAX(t.modified_on) AS modifiedOn,' +
+						' SUM(t.version) AS version' +
+						' FROM (' + sql + ') AS t';
+				} else {
+					sql = 'SELECT' +
+						' MAX(modified_on) AS modifiedOn,' +
+						' SUM(version) AS version FROM x2rcinfo' +
+						' WHERE ' + filterExpr;
+					switch (lockType) {
+					case 'shared':
+						sql = tx.dbDriver.makeSelectWithLocks(
+							sql, null, TABLE_DESC);
+						break;
+					case 'exclusive':
+						sql = tx.dbDriver.makeSelectWithLocks(
+							sql, TABLE_DESC, null);
+					}
+				}
 				log(`executing SQL: ${sql}`);
 				let res;
 				tx.dbDriver.executeQuery(tx.connection, sql, {
@@ -189,7 +230,7 @@ class DBTableRecordCollectionsMonitor extends EventEmitter {
  * @returns {module:x2node-dbos.RecordCollectionsMonitor} The monitor assigned to
  * the DBO factory.
  */
-exports.addTo = function(dboFactory, ds) {
+exports.assignTo = function(dboFactory, ds) {
 
 	// create the monitor
 	const monitor = new DBTableRecordCollectionsMonitor();
