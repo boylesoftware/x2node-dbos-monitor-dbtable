@@ -203,6 +203,14 @@ class DBTableRecordCollectionsMonitor extends EventEmitter {
 							};
 					},
 					onSuccess() {
+						if (!res)
+							res = new Object();
+						if (!(res.modifiedOn instanceof Date)) {
+							res.modifiedOn = new Date();
+							res.modifiedOn.setTime(0);
+						}
+						if ((typeof res.version) !== 'number')
+							res.version = 0;
 						resolve(res);
 					},
 					onError(err) {
