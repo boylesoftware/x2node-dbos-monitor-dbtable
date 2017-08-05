@@ -1,6 +1,6 @@
 {
   "name": "x2node-dbos-monitor-dbtable",
-  "version": "1.0.2",
+  "version": "1.0.3-alpha.0",
   "description": "DB table-based record collections monitor.",
   "keywords": [
     "x2node",
@@ -26,10 +26,10 @@
     "node": ">=4.3.2"
   },
   "dependencies": {
-    "x2node-common": "^1.3.3"
+    "x2node-common": "^1.3.4"
   },
   "peerDependencies": {
-    "x2node-dbos": "^1.0.6"
+    "x2node-dbos": "^1.0.7"
   },
   "devDependencies": {
     "eslint": "^4.3.0"
