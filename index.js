@@ -194,12 +194,12 @@ class DBTableRecordCollectionsMonitor extends EventEmitter {
 						if (Array.isArray(row))
 							res = {
 								modifiedOn: row[0],
-								version: row[1]
+								version: Number(row[1])
 							};
 						else
 							res = {
 								modifiedOn: row.modifiedOn,
-								version: row.version
+								version: Number(row.version)
 							};
 					},
 					onSuccess() {
@@ -209,7 +209,7 @@ class DBTableRecordCollectionsMonitor extends EventEmitter {
 							res.modifiedOn = new Date();
 							res.modifiedOn.setTime(0);
 						}
-						if ((typeof res.version) !== 'number')
+						if (!Number.isFinite(res.version))
 							res.version = 0;
 						resolve(res);
 					},
