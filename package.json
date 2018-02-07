@@ -26,12 +26,12 @@
     "node": ">=4.3.2"
   },
   "dependencies": {
-    "x2node-common": "^1.3.4"
+    "x2node-common": "^1.3.5"
   },
   "peerDependencies": {
-    "x2node-dbos": "^1.1.1"
+    "x2node-dbos": "^1.2.0"
   },
   "devDependencies": {
-    "eslint": "^4.3.0"
+    "eslint": "^4.17.0"
   }
 }
