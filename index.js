@@ -85,7 +85,9 @@ class DBTableRecordCollectionsMonitor extends EventEmitter {
 			return Promise.reject(this._initError);
 
 		// check if anything was updated
-		if (!recordTypeNames || (recordTypeNames.size === 0))
+		if (!recordTypeNames ||
+			(Array.isArray(recordTypeNames) && (recordTypeNames.length === 0))
+			(recordTypeNames.size === 0))
 			return;
 
 		// check if not initialized yet
@@ -107,7 +109,9 @@ class DBTableRecordCollectionsMonitor extends EventEmitter {
 					ctx.executedOn.toISOString(), {
 						trace(sql) {
 							lastSql = sql;
-							ctx.log(`executing SQL: ${sql}`);
+							ctx.log(
+								`(tx #${ctx.transaction.id}) executing SQL: ` +
+									sql);
 						},
 						onSuccess() {
 							resolve();
@@ -139,7 +143,8 @@ class DBTableRecordCollectionsMonitor extends EventEmitter {
 			const monitor = this;
 			return new Promise(resolve => {
 				monitor.on('ready', () => {
-					resolve(monitor.getCollectionsVersion(tx, recordTypeNames));
+					resolve(monitor.getCollectionsVersion(
+						tx, recordTypeNames, lockType));
 				});
 			});
 		}
@@ -147,14 +152,7 @@ class DBTableRecordCollectionsMonitor extends EventEmitter {
 		// query the table
 		return new Promise((resolve, reject) => {
 			try {
-				const filterExpr = 'name' + (
-					recordTypeNames.size === 1 ?
-						' = ' + tx.dbDriver.stringLiteral(
-							recordTypeNames.values().next().value) :
-						' IN (' + Array.from(recordTypeNames).map(
-							v => tx.dbDriver.stringLiteral(v)).join(', ') +
-						')'
-				);
+				const filterExpr = this._createFilterExpr(recordTypeNames);
 				let sql;
 				if (lockType && !tx.dbDriver.supportsRowLocksWithAggregates()) {
 					sql = 'SELECT modified_on, version FROM x2rcinfo WHERE ' +
@@ -187,7 +185,7 @@ class DBTableRecordCollectionsMonitor extends EventEmitter {
 							sql, TABLE_DESCS, null);
 					}
 				}
-				log(`executing SQL: ${sql}`);
+				log(`(tx #${tx.id}) executing SQL: ${sql}`);
 				let res;
 				tx.dbDriver.executeQuery(tx.connection, sql, {
 					onRow(row) {
@@ -224,6 +222,88 @@ class DBTableRecordCollectionsMonitor extends EventEmitter {
 				reject(err);
 			}
 		});
+	}
+
+	// lock record collections
+	lockCollections(tx, recordTypeNames, lockType) {
+
+		// check if initialization error
+		if (this._initError)
+			return Promise.reject(this._initError);
+
+		// check if not initialized yet
+		if (!this._ready) {
+			const monitor = this;
+			return new Promise(resolve => {
+				monitor.on('ready', () => {
+					resolve(monitor.lockCollections(
+						tx, recordTypeNames, lockType));
+				});
+			});
+		}
+
+		// place the lock on the table
+		return new Promise((resolve, reject) => {
+			try {
+				let sql = 'SELECT name FROM x2rcinfo WHERE ' +
+					this._createFilterExpr(recordTypeNames);
+				switch (lockType) {
+				case 'shared':
+					sql = tx.dbDriver.makeSelectWithLocks(
+						sql, null, TABLE_DESCS);
+					break;
+				case 'exclusive':
+					sql = tx.dbDriver.makeSelectWithLocks(
+						sql, TABLE_DESCS, null);
+				}
+				log(`(tx #${tx.id}) executing SQL: ${sql}`);
+				tx.dbDriver.executeQuery(tx.connection, sql, {
+					onSuccess() {
+						resolve();
+					},
+					onError(err) {
+						common.error(`error executing SQL [${sql}]`, err);
+						reject(err);
+					}
+				});
+			} catch (err) {
+				common.error(
+					'error querying record collection version info table', err);
+				reject(err);
+			}
+		});
+	}
+
+	/**
+	 * Create collection name SQL filter expression for the specified record
+	 * types.
+	 *
+	 * @private
+	 * @param {(string|Array.<string>|Iterable.<string>)} recordTypeNames Record
+	 * type names.
+	 * @returns {string} SQL expression for the <code>WHERE</code> clause.
+	 */
+	_createFilterExpr(recordTypeNames) {
+
+		let res;
+		if (Array.isArray(recordTypeNames))
+			res = recordTypeNames;
+		else if ((typeof recordTypeNames) === 'string')
+			res = [ recordTypeNames ];
+		else if (recordTypeNames &&
+			((typeof recordTypeNames[Symbol.iterator]) === 'function'))
+			res = Array.from(recordTypeNames);
+
+		if (!res || (res.length === 0))
+			throw new common.X2UsageError(
+				'Record type names must be a non-empty iterable' +
+					' or a single string.');
+
+		if (res.length === 1)
+			return 'name = ' + tx.dbDriver.stringLiteral(recordTypeNames[0]);
+
+		return 'name IN (' + recordTypeNames.map(
+			v => tx.dbDriver.stringLiteral(v)).join(', ') + ')';
 	}
 }
 
