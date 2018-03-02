@@ -7,7 +7,6 @@
  */
 'use strict';
 
-const EventEmitter = require('events');
 const common = require('x2node-common');
 
 
@@ -19,6 +18,13 @@ const common = require('x2node-common');
  */
 const log = common.getDebugLogger('X2_DBO');
 
+/**
+ * Version info table name.
+ *
+ * @private
+ * @constant {string}
+ */
+const TABLE = 'x2rcinfo';
 
 /**
  * Version info table descriptor.
@@ -27,62 +33,45 @@ const log = common.getDebugLogger('X2_DBO');
  * @constant {Array.<Object>}
  */
 const TABLE_DESCS = [{
-	tableName: 'x2rcinfo',
-	tableAlias: 'x2rcinfo'
+	tableName: TABLE,
+	tableAlias: TABLE
 }];
 
-
-/**
- * Monitor initialization completion event.
- *
- * @private
- * @event module:x2node-dbos-monitor-dbtable~DBTableRecordCollectionsMonitor#ready
- * @type {string}
- */
 
 /**
  * The DB table record collections monitor implementation.
  *
  * @private
  * @inner
- * @extends external:EventEmitter
  * @implements {module:x2node-dbos.RecordCollectionsMonitor}
- * @fires module:x2node-dbos-monitor-dbtable~DBTableRecordCollectionsMonitor#ready
  */
-class DBTableRecordCollectionsMonitor extends EventEmitter {
+class DBTableRecordCollectionsMonitor {
 
 	/**
 	 * Create new unitnialized monitor instance.
+	 *
+	 * @param {Promise} initCompletePromise Initialization completion promise.
 	 */
-	constructor() {
-		super();
+	constructor(initCompletePromise) {
 
-		this._ready = false;
-		this._initError = null;
+		this._init = initCompletePromise;
 	}
 
+
 	/**
-	 * Called when the monitor initialization is complete (the DB table is in the
-	 * database and is ready to be used).
+	 * Get promise that resolves upon monitor initialization completion.
 	 *
-	 * @param {external:Error} [err] Error, if could not be initialized.
+	 * @returns {Promise} Initialization completion promise. If there was an
+	 * error and the monitor could not be initialized, the promise is rejected
+	 * with the error.
 	 */
-	initComplete(err) {
+	waitForInitComplete() {
 
-		if (err)
-			this._initError = err;
-		else
-			this._ready = true;
-
-		this.emit('ready');
+		return this._init;
 	}
 
 	// process record collections update
 	collectionsUpdated(ctx, recordTypeNames) {
-
-		// check if initialization error
-		if (this._initError)
-			return Promise.reject(this._initError);
 
 		// check if anything was updated
 		if (!recordTypeNames ||
@@ -90,22 +79,12 @@ class DBTableRecordCollectionsMonitor extends EventEmitter {
 			(recordTypeNames.size === 0))
 			return;
 
-		// check if not initialized yet
-		if (!this._ready) {
-			const monitor = this;
-			return new Promise(resolve => {
-				monitor.on('ready', () => {
-					resolve(monitor.collectionsUpdated(ctx, recordTypeNames));
-				});
-			});
-		}
-
 		// update the table
-		return new Promise((resolve, reject) => {
+		return this._init.then(() => new Promise((resolve, reject) => {
 			try {
 				let lastSql;
 				ctx.dbDriver.updateVersionTable(
-					ctx.connection, 'x2rcinfo', Array.from(recordTypeNames),
+					ctx.connection, TABLE, Array.from(recordTypeNames),
 					ctx.executedOn.toISOString(), {
 						trace(sql) {
 							lastSql = sql;
@@ -128,34 +107,19 @@ class DBTableRecordCollectionsMonitor extends EventEmitter {
 					'error updating record collection version info table', err);
 				reject(err);
 			}
-		});
+		}));
 	}
 
 	// query record collections version
 	getCollectionsVersion(tx, recordTypeNames, lockType) {
 
-		// check if initialization error
-		if (this._initError)
-			return Promise.reject(this._initError);
-
-		// check if not initialized yet
-		if (!this._ready) {
-			const monitor = this;
-			return new Promise(resolve => {
-				monitor.on('ready', () => {
-					resolve(monitor.getCollectionsVersion(
-						tx, recordTypeNames, lockType));
-				});
-			});
-		}
-
 		// query the table
-		return new Promise((resolve, reject) => {
+		return this._init.then(() => new Promise((resolve, reject) => {
 			try {
 				const filterExpr = this._createFilterExpr(recordTypeNames);
 				let sql;
 				if (lockType && !tx.dbDriver.supportsRowLocksWithAggregates()) {
-					sql = 'SELECT modified_on, version FROM x2rcinfo WHERE ' +
+					sql = `SELECT modified_on, version FROM ${TABLE} WHERE ` +
 						filterExpr;
 					switch (lockType) {
 					case 'shared':
@@ -173,7 +137,7 @@ class DBTableRecordCollectionsMonitor extends EventEmitter {
 				} else {
 					sql = 'SELECT' +
 						' MAX(modified_on) AS modifiedOn,' +
-						' SUM(version) AS version FROM x2rcinfo' +
+						` SUM(version) AS version FROM ${TABLE}` +
 						' WHERE ' + filterExpr;
 					switch (lockType) {
 					case 'shared':
@@ -221,31 +185,16 @@ class DBTableRecordCollectionsMonitor extends EventEmitter {
 					'error querying record collection version info table', err);
 				reject(err);
 			}
-		});
+		}));
 	}
 
 	// lock record collections
 	lockCollections(tx, recordTypeNames, lockType) {
 
-		// check if initialization error
-		if (this._initError)
-			return Promise.reject(this._initError);
-
-		// check if not initialized yet
-		if (!this._ready) {
-			const monitor = this;
-			return new Promise(resolve => {
-				monitor.on('ready', () => {
-					resolve(monitor.lockCollections(
-						tx, recordTypeNames, lockType));
-				});
-			});
-		}
-
 		// place the lock on the table
-		return new Promise((resolve, reject) => {
+		return this._init.then(() => new Promise((resolve, reject) => {
 			try {
-				let sql = 'SELECT name FROM x2rcinfo WHERE ' +
+				let sql = `SELECT name FROM ${TABLE} WHERE ` +
 					this._createFilterExpr(recordTypeNames);
 				switch (lockType) {
 				case 'shared':
@@ -271,7 +220,7 @@ class DBTableRecordCollectionsMonitor extends EventEmitter {
 					'error querying record collection version info table', err);
 				reject(err);
 			}
-		});
+		}));
 	}
 
 	/**
@@ -320,43 +269,45 @@ class DBTableRecordCollectionsMonitor extends EventEmitter {
  */
 exports.assignTo = function(dboFactory, ds) {
 
-	// create the monitor
-	const monitor = new DBTableRecordCollectionsMonitor();
-
 	// make sure we have the table
-	ds.getConnection().then(
-		connection => {
+	const initCompletePromise = ds.getConnection(
+	).then(
+		con => new Promise((resolve, reject) => {
 			try {
 				let lastSql;
 				dboFactory.dbDriver.createVersionTableIfNotExists(
-					connection, 'x2rcinfo', {
+					con, TABLE, {
 						trace(sql) {
 							lastSql = sql;
 							log(`executing SQL: ${sql}`);
 						},
 						onSuccess() {
-							ds.releaseConnection(connection);
-							monitor.initComplete();
+							ds.releaseConnection(con);
+							resolve();
 						},
 						onError(err) {
-							ds.releaseConnection(connection);
 							common.error(
 								`error executing SQL [${lastSql}]`, err);
-							monitor.initComplete(err);
+							ds.releaseConnection(con);
+							reject(err);
 						}
-					});
+					}
+				);
 			} catch (err) {
-				ds.releaseConnection(connection);
 				common.error(
 					'error creating record collections version info table', err);
-				monitor.initComplete(err);
+				ds.releaseConnection(con);
+				reject(err);
 			}
-		},
+		}),
 		err => {
 			common.error('error acquiring DB connection', err);
-			monitor.initComplete(err);
+			return Promise.reject(err);
 		}
 	);
+
+	// create the monitor
+	const monitor = new DBTableRecordCollectionsMonitor(initCompletePromise);
 
 	// add monitor to the DBO factory
 	dboFactory.setRecordCollectionsMonitor(monitor);
