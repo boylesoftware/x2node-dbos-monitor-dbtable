@@ -75,7 +75,7 @@ class DBTableRecordCollectionsMonitor {
 
 		// check if anything was updated
 		if (!recordTypeNames ||
-			(Array.isArray(recordTypeNames) && (recordTypeNames.length === 0))
+			(Array.isArray(recordTypeNames) && (recordTypeNames.length === 0)) ||
 			(recordTypeNames.size === 0))
 			return;
 
@@ -116,7 +116,7 @@ class DBTableRecordCollectionsMonitor {
 		// query the table
 		return this._init.then(() => new Promise((resolve, reject) => {
 			try {
-				const filterExpr = this._createFilterExpr(recordTypeNames);
+				const filterExpr = this._createFilterExpr(tx, recordTypeNames);
 				let sql;
 				if (lockType && !tx.dbDriver.supportsRowLocksWithAggregates()) {
 					sql = `SELECT modified_on, version FROM ${TABLE} WHERE ` +
@@ -195,7 +195,7 @@ class DBTableRecordCollectionsMonitor {
 		return this._init.then(() => new Promise((resolve, reject) => {
 			try {
 				let sql = `SELECT name FROM ${TABLE} WHERE ` +
-					this._createFilterExpr(recordTypeNames);
+					this._createFilterExpr(tx, recordTypeNames);
 				switch (lockType) {
 				case 'shared':
 					sql = tx.dbDriver.makeSelectWithLocks(
@@ -228,11 +228,12 @@ class DBTableRecordCollectionsMonitor {
 	 * types.
 	 *
 	 * @private
+	 * @param {module:x2node-dbos~Transaction} tx The transaction handler.
 	 * @param {(string|Array.<string>|Iterable.<string>)} recordTypeNames Record
 	 * type names.
 	 * @returns {string} SQL expression for the <code>WHERE</code> clause.
 	 */
-	_createFilterExpr(recordTypeNames) {
+	_createFilterExpr(tx, recordTypeNames) {
 
 		let res;
 		if (Array.isArray(recordTypeNames))
@@ -249,9 +250,9 @@ class DBTableRecordCollectionsMonitor {
 					' or a single string.');
 
 		if (res.length === 1)
-			return 'name = ' + tx.dbDriver.stringLiteral(recordTypeNames[0]);
+			return 'name = ' + tx.dbDriver.stringLiteral(res[0]);
 
-		return 'name IN (' + recordTypeNames.map(
+		return 'name IN (' + res.map(
 			v => tx.dbDriver.stringLiteral(v)).join(', ') + ')';
 	}
 }
