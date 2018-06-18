@@ -102,7 +102,7 @@ class DBTableRecordCollectionsMonitor {
 				);
 			} catch (err) {
 				common.error(
-					'error updating record collection version info table', err);
+					'error updating record collections monitor table', err);
 				reject(err);
 			}
 		}));
@@ -111,67 +111,52 @@ class DBTableRecordCollectionsMonitor {
 	// query record collections version
 	getCollectionsVersion(tx, recordTypeNames, lockType) {
 
+		// create aggregate version information descriptor
+		const versionInfo = {
+			modifiedOn: new Date(0),
+			version: 0
+		};
+
+		// function to use to process and aggregate a version row
+		function processVersionRow(row) {
+			let name, modifiedOn, version;
+			if (Array.isArray(row)) {
+				name = row[0];
+				modifiedOn = row[1];
+				version = Number(row[2]);
+			} else {
+				name = row.name;
+				modifiedOn = row.modified_on;
+				version = Number(row.version);
+			}
+			if (modifiedOn.getTime() > versionInfo.modifiedOn.getTime())
+				versionInfo.modifiedOn = modifiedOn;
+			versionInfo.version += version;
+		}
+
 		// query the table
 		return this._init.then(() => new Promise((resolve, reject) => {
 			try {
 				const filterExpr = this._createFilterExpr(tx, recordTypeNames);
-				let sql;
-				if (lockType && !tx.dbDriver.supportsRowLocksWithAggregates()) {
-					sql = `SELECT modified_on, version FROM ${TABLE} WHERE ` +
-						filterExpr;
-					switch (lockType) {
-					case 'shared':
-						sql = tx.dbDriver.makeSelectWithLocks(
-							sql, null, TABLE_DESCS);
-						break;
-					case 'exclusive':
-						sql = tx.dbDriver.makeSelectWithLocks(
-							sql, TABLE_DESCS, null);
-					}
-					sql = 'SELECT' +
-						' MAX(t.modified_on) AS modifiedOn,' +
-						' SUM(t.version) AS version' +
-						' FROM (' + sql + ') AS t';
-				} else {
-					sql = 'SELECT' +
-						' MAX(modified_on) AS modifiedOn,' +
-						` SUM(version) AS version FROM ${TABLE}` +
-						' WHERE ' + filterExpr;
-					switch (lockType) {
-					case 'shared':
-						sql = tx.dbDriver.makeSelectWithLocks(
-							sql, null, TABLE_DESCS);
-						break;
-					case 'exclusive':
-						sql = tx.dbDriver.makeSelectWithLocks(
-							sql, TABLE_DESCS, null);
-					}
+				let sql = 'SELECT name, modified_on, version' +
+					` FROM ${TABLE} WHERE ` + filterExpr;
+				switch (lockType) {
+				case 'shared':
+					sql = tx.dbDriver.makeSelectWithLocks(
+						sql, null, TABLE_DESCS);
+					break;
+				case 'exclusive':
+					sql = tx.dbDriver.makeSelectWithLocks(
+						sql, TABLE_DESCS, null);
 				}
 				log(`(tx #${tx.id}) executing SQL: ${sql}`);
 				let res;
 				tx.dbDriver.executeQuery(tx.connection, sql, {
 					onRow(row) {
-						if (Array.isArray(row))
-							res = {
-								modifiedOn: row[0],
-								version: Number(row[1])
-							};
-						else
-							res = {
-								modifiedOn: row.modifiedOn,
-								version: Number(row.version)
-							};
+						processVersionRow(row);
 					},
 					onSuccess() {
-						if (!res)
-							res = new Object();
-						if (!(res.modifiedOn instanceof Date)) {
-							res.modifiedOn = new Date();
-							res.modifiedOn.setTime(0);
-						}
-						if (!Number.isFinite(res.version))
-							res.version = 0;
-						resolve(res);
+						resolve(versionInfo);
 					},
 					onError(err) {
 						common.error(`error executing SQL [${sql}]`, err);
@@ -180,7 +165,7 @@ class DBTableRecordCollectionsMonitor {
 				});
 			} catch (err) {
 				common.error(
-					'error querying record collection version info table', err);
+					'error querying record collections monitor table', err);
 				reject(err);
 			}
 		}));
@@ -188,6 +173,8 @@ class DBTableRecordCollectionsMonitor {
 
 	// lock record collections
 	lockCollections(tx, recordTypeNames, lockType) {
+
+		// TODO: insert rows if some collections are not present in the table
 
 		// place the lock on the table
 		return this._init.then(() => new Promise((resolve, reject) => {
