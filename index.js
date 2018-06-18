@@ -88,9 +88,7 @@ class DBTableRecordCollectionsMonitor {
 					ctx.executedOn.toISOString(), {
 						trace(sql) {
 							lastSql = sql;
-							ctx.log(
-								`(tx #${ctx.transaction.id}) executing SQL: ` +
-									sql);
+							ctx.log('executing SQL: ' + sql);
 						},
 						onSuccess() {
 							resolve();
@@ -289,7 +287,7 @@ exports.assignTo = function(dboFactory, ds) {
 						onError(err) {
 							common.error(
 								`error executing SQL [${lastSql}]`, err);
-							ds.releaseConnection(con);
+							ds.releaseConnection(con, err);
 							reject(err);
 						}
 					}
@@ -297,7 +295,7 @@ exports.assignTo = function(dboFactory, ds) {
 			} catch (err) {
 				common.error(
 					'error creating record collections version info table', err);
-				ds.releaseConnection(con);
+				ds.releaseConnection(con, err);
 				reject(err);
 			}
 		}),
