@@ -119,13 +119,11 @@ class DBTableRecordCollectionsMonitor {
 
 		// function to use to process and aggregate a version row
 		function processVersionRow(row) {
-			let name, modifiedOn, version;
+			let modifiedOn, version;
 			if (Array.isArray(row)) {
-				name = row[0];
 				modifiedOn = row[1];
 				version = Number(row[2]);
 			} else {
-				name = row.name;
 				modifiedOn = row.modified_on;
 				version = Number(row.version);
 			}
@@ -150,7 +148,6 @@ class DBTableRecordCollectionsMonitor {
 						sql, TABLE_DESCS, null);
 				}
 				log(`(tx #${tx.id}) executing SQL: ${sql}`);
-				let res;
 				tx.dbDriver.executeQuery(tx.connection, sql, {
 					onRow(row) {
 						processVersionRow(row);
