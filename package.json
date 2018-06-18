@@ -1,6 +1,6 @@
 {
   "name": "x2node-dbos-monitor-dbtable",
-  "version": "1.1.2-alpha.0",
+  "version": "1.1.2",
   "description": "DB table-based record collections monitor.",
   "keywords": [
     "x2node",
