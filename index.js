@@ -1,6 +1,6 @@
 /**
  * Implementation of the record collections monitor for the DBOs module that uses
- * a database table to store current record collections version information.
+ * a database table to lock collection and store collections version information.
  *
  * @module x2node-dbos-monitor-dbtable
  * @requires module:x2node-common
@@ -19,7 +19,7 @@ const common = require('x2node-common');
 const log = common.getDebugLogger('X2_DBO');
 
 /**
- * Version info table name.
+ * Monitor table name.
  *
  * @private
  * @constant {string}
@@ -27,7 +27,7 @@ const log = common.getDebugLogger('X2_DBO');
 const TABLE = 'x2rcinfo';
 
 /**
- * Version info table descriptor.
+ * Record collections monitor table descriptor.
  *
  * @private
  * @constant {Array.<Object>}
@@ -36,6 +36,24 @@ const TABLE_DESCS = [{
 	tableName: TABLE,
 	tableAlias: TABLE
 }];
+
+/**
+ * Symbol used to store the set of exclusively locked record type names on the
+ * transaction.
+ *
+ * @private
+ * @constant {Symbol}
+ */
+const LOCKED_EXCLUSIVE = Symbol('LOCKED_EXCLUSIVE');
+
+/**
+ * Symbol used to store the set of record type names locked for share on the
+ * transaction.
+ *
+ * @private
+ * @constant {Symbol}
+ */
+const LOCKED_SHARED = Symbol('LOCKED_SHARED');
 
 
 /**
@@ -70,21 +88,179 @@ class DBTableRecordCollectionsMonitor {
 		return this._init;
 	}
 
+	// lock record collections and get version info
+	lockCollections(tx, locks, includeInVersion) {
+
+		// create aggregate version information descriptor
+		const versionInfo = {
+			modifiedOn: new Date(0),
+			version: 0
+		};
+
+		// versioned names set
+		const versionedNames = new Set(includeInVersion);
+		if (versionedNames.size === 0)
+			versionedNames.has = function() { return true; };
+
+		// function to use to process and aggregate a version row
+		function processVersionRow(row) {
+			let name, modifiedOn, version;
+			if (Array.isArray(row)) {
+				name = row[0];
+				modifiedOn = row[1];
+				version = Number(row[2]);
+			} else {
+				name = row.name;
+				modifiedOn = row.modified_on;
+				version = Number(row.version);
+			}
+			if (versionedNames.has(name)) {
+				if (modifiedOn.getTime() > versionInfo.modifiedOn.getTime())
+					versionInfo.modifiedOn = modifiedOn;
+				versionInfo.version += version;
+			}
+		}
+
+		// start queries promise chain with monitor initialization
+		let chain = this._init;
+
+		// add exclusive locks
+		const exclusiveNames = new Set(locks.exclusive);
+		if (exclusiveNames.size > 0)
+			chain = chain.then(() => new Promise((resolve, reject) => {
+				try {
+					const sql = tx.dbDriver.makeSelectWithLocks(
+						'SELECT name, modified_on, version' +
+							` FROM ${TABLE} WHERE ` +
+							this._createFilterExpr(
+								tx, Array.from(exclusiveNames)),
+						TABLE_DESCS, null
+					);
+					log(`(tx #${tx.id}) executing SQL: ${sql}`);
+					tx.dbDriver.executeQuery(tx.connection, sql, {
+						onRow(row) {
+							processVersionRow(row);
+						},
+						onSuccess() {
+							if (tx[LOCKED_EXCLUSIVE])
+								for (let name of tx[LOCKED_EXCLUSIVE])
+									exclusiveNames.add(name);
+							tx[LOCKED_EXCLUSIVE] = exclusiveNames;
+							resolve();
+						},
+						onError(err) {
+							common.error(`error executing SQL [${sql}]`, err);
+							reject(err);
+						}
+					});
+				} catch (err) {
+					common.error(
+						'error querying record collections monitor table', err);
+					reject(err);
+				}
+			}));
+
+		// add shared locks
+		const sharedNames = new Set(locks.shared);
+		if (sharedNames.size > 0)
+			chain = chain.then(() => new Promise((resolve, reject) => {
+				try {
+					const sql = tx.dbDriver.makeSelectWithLocks(
+						'SELECT name, modified_on, version' +
+							` FROM ${TABLE} WHERE ` +
+							this._createFilterExpr(
+								tx, Array.from(sharedNames)),
+						null, TABLE_DESCS
+					);
+					log(`(tx #${tx.id}) executing SQL: ${sql}`);
+					tx.dbDriver.executeQuery(tx.connection, sql, {
+						onRow(row) {
+							processVersionRow(row);
+						},
+						onSuccess() {
+							if (tx[LOCKED_SHARED])
+								for (let name of tx[LOCKED_SHARED])
+									sharedNames.add(name);
+							tx[LOCKED_SHARED] = sharedNames;
+							resolve();
+						},
+						onError(err) {
+							common.error(`error executing SQL [${sql}]`, err);
+							reject(err);
+						}
+					});
+				} catch (err) {
+					common.error(
+						'error querying record collections monitor table', err);
+					reject(err);
+				}
+			}));
+
+		// return version info promise
+		return chain.then(() => versionInfo);
+	}
+
+	// add shared lock for record type
+	lockCollectionForShare(tx, recordTypeName) {
+
+		// check if already locked
+		const sharedNames = tx[LOCKED_SHARED];
+		const exclusiveNames = tx[LOCKED_EXCLUSIVE];
+		if ((sharedNames && sharedNames.has(recordTypeName)) ||
+			(exclusiveNames && exclusiveNames.has(recordTypeName)))
+			return Promise.resolve();
+
+		// perform the lock
+		return this._init.then(() => new Promise((resolve, reject) => {
+			try {
+				const sql = tx.dbDriver.makeSelectWithLocks(
+					`SELECT name FROM ${TABLE} WHERE ` +
+						this._createFilterExpr(tx, [ recordTypeName ]),
+					null, TABLE_DESCS
+				);
+				log(`(tx #${tx.id}) executing SQL: ${sql}`);
+				tx.dbDriver.executeQuery(tx.connection, sql, {
+					onSuccess() {
+						if (tx[LOCKED_SHARED])
+							tx[LOCKED_SHARED].add(recordTypeName);
+						else
+							tx[LOCKED_SHARED] = new Set([ recordTypeName ]);
+						resolve();
+					},
+					onError(err) {
+						common.error(`error executing SQL [${sql}]`, err);
+						reject(err);
+					}
+				});
+			} catch (err) {
+				common.error(
+					'error querying record collections monitor table', err);
+				reject(err);
+			}
+		}));
+	}
+
 	// process record collections update
 	collectionsUpdated(ctx, recordTypeNames) {
 
 		// check if anything was updated
-		if (!recordTypeNames ||
-			(Array.isArray(recordTypeNames) && (recordTypeNames.length === 0)) ||
-			(recordTypeNames.size === 0))
+		const namesList = Array.from(recordTypeNames || []);
+		if (namesList.length === 0)
 			return;
+
+		// make sure the collection is exclusively locked
+		const lockedNames = ctx.transaction[LOCKED_EXCLUSIVE];
+		if (!lockedNames || namesList.some(name => !lockedNames.has(name)))
+			throw new common.X2UsageError(
+				'Some of the updated record collections were not exclusively' +
+					' locked for the transaction.');
 
 		// update the table
 		return this._init.then(() => new Promise((resolve, reject) => {
 			try {
 				let lastSql;
 				ctx.dbDriver.updateVersionTable(
-					ctx.connection, TABLE, Array.from(recordTypeNames),
+					ctx.connection, TABLE, namesList,
 					ctx.executedOn.toISOString(), {
 						trace(sql) {
 							lastSql = sql;
@@ -104,12 +280,13 @@ class DBTableRecordCollectionsMonitor {
 				);
 			} catch (err) {
 				common.error(
-					'error updating record collection version info table', err);
+					'error updating record collections monitor table', err);
 				reject(err);
 			}
 		}));
 	}
 
+	/*
 	// query record collections version
 	getCollectionsVersion(tx, recordTypeNames, lockType) {
 
@@ -222,6 +399,7 @@ class DBTableRecordCollectionsMonitor {
 			}
 		}));
 	}
+	*/
 
 	/**
 	 * Create collection name SQL filter expression for the specified record
@@ -229,30 +407,19 @@ class DBTableRecordCollectionsMonitor {
 	 *
 	 * @private
 	 * @param {module:x2node-dbos~Transaction} tx The transaction handler.
-	 * @param {(string|Array.<string>|Iterable.<string>)} recordTypeNames Record
-	 * type names.
+	 * @param {Array.<string>} namesList Record type names. Must not be empty.
 	 * @returns {string} SQL expression for the <code>WHERE</code> clause.
 	 */
-	_createFilterExpr(tx, recordTypeNames) {
+	_createFilterExpr(tx, namesList) {
 
-		let res;
-		if (Array.isArray(recordTypeNames))
-			res = recordTypeNames;
-		else if ((typeof recordTypeNames) === 'string')
-			res = [ recordTypeNames ];
-		else if (recordTypeNames &&
-			((typeof recordTypeNames[Symbol.iterator]) === 'function'))
-			res = Array.from(recordTypeNames);
-
-		if (!res || (res.length === 0))
+		if (namesList.length === 0)
 			throw new common.X2UsageError(
-				'Record type names must be a non-empty iterable' +
-					' or a single string.');
+				'Record type names must be a non-empty iterable.');
 
-		if (res.length === 1)
-			return 'name = ' + tx.dbDriver.stringLiteral(res[0]);
+		if (namesList.length === 1)
+			return 'name = ' + tx.dbDriver.stringLiteral(namesList[0]);
 
-		return 'name IN (' + res.map(
+		return 'name IN (' + namesList.map(
 			v => tx.dbDriver.stringLiteral(v)).join(', ') + ')';
 	}
 }
@@ -277,7 +444,8 @@ exports.assignTo = function(dboFactory, ds) {
 			try {
 				let lastSql;
 				dboFactory.dbDriver.createVersionTableIfNotExists(
-					con, TABLE, {
+					con, TABLE, dboFactory.recordTypes.definedRecordTypeNames,
+					{
 						trace(sql) {
 							lastSql = sql;
 							log(`executing SQL: ${sql}`);
@@ -289,7 +457,7 @@ exports.assignTo = function(dboFactory, ds) {
 						onError(err) {
 							common.error(
 								`error executing SQL [${lastSql}]`, err);
-							ds.releaseConnection(con);
+							ds.releaseConnection(con, err);
 							reject(err);
 						}
 					}
