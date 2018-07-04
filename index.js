@@ -1,6 +1,6 @@
 /**
  * Implementation of the record collections monitor for the DBOs module that uses
- * a database table to store current record collections version information.
+ * a database table to lock collection and store collections version information.
  *
  * @module x2node-dbos-monitor-dbtable
  * @requires module:x2node-common
@@ -19,7 +19,7 @@ const common = require('x2node-common');
 const log = common.getDebugLogger('X2_DBO');
 
 /**
- * Version info table name.
+ * Record collections monitor table name.
  *
  * @private
  * @constant {string}
@@ -27,7 +27,7 @@ const log = common.getDebugLogger('X2_DBO');
 const TABLE = 'x2rcinfo';
 
 /**
- * Version info table descriptor.
+ * Record collections monitor table descriptor.
  *
  * @private
  * @constant {Array.<Object>}
@@ -36,6 +36,24 @@ const TABLE_DESCS = [{
 	tableName: TABLE,
 	tableAlias: TABLE
 }];
+
+/**
+ * Symbol used to store a set of record collection names locked in share mode on
+ * a transaction.
+ *
+ * @private
+ * @constant {Symbol}
+ */
+const LOCKED_SHARED = Symbol('LOCKED_SHARED');
+
+/**
+ * Symbol used to store a set of record collection names locked in exclusive mode
+ * on a transaction.
+ *
+ * @private
+ * @constant {Symbol}
+ */
+const LOCKED_EXCLUSIVE = Symbol('LOCKED_EXCLUSIVE');
 
 
 /**
@@ -88,7 +106,9 @@ class DBTableRecordCollectionsMonitor {
 					ctx.executedOn.toISOString(), {
 						trace(sql) {
 							lastSql = sql;
-							ctx.log('executing SQL: ' + sql);
+							ctx.log(
+								`(tx #${ctx.transaction.id}) executing SQL: ` +
+									sql);
 						},
 						onSuccess() {
 							resolve();
@@ -135,9 +155,12 @@ class DBTableRecordCollectionsMonitor {
 		// query the table
 		return this._init.then(() => new Promise((resolve, reject) => {
 			try {
+
 				const filterExpr = this._createFilterExpr(tx, recordTypeNames);
+
 				let sql = 'SELECT name, modified_on, version' +
 					` FROM ${TABLE} WHERE ` + filterExpr;
+
 				switch (lockType) {
 				case 'shared':
 					sql = tx.dbDriver.makeSelectWithLocks(
@@ -147,12 +170,19 @@ class DBTableRecordCollectionsMonitor {
 					sql = tx.dbDriver.makeSelectWithLocks(
 						sql, TABLE_DESCS, null);
 				}
+
+				const lockedCollections = this._getTxLockedCollections(
+					tx, lockType);
+
 				log(`(tx #${tx.id}) executing SQL: ${sql}`);
 				tx.dbDriver.executeQuery(tx.connection, sql, {
 					onRow(row) {
 						processVersionRow(row);
 					},
 					onSuccess() {
+						if (lockedCollections)
+							for (let n of recordTypeNames)
+								lockedCollections.add(n);
 						resolve(versionInfo);
 					},
 					onError(err) {
@@ -171,13 +201,38 @@ class DBTableRecordCollectionsMonitor {
 	// lock record collections
 	lockCollections(tx, recordTypeNames, lockType) {
 
-		// TODO: insert rows if some collections are not present in the table
-
 		// place the lock on the table
 		return this._init.then(() => new Promise((resolve, reject) => {
 			try {
+
+				const lockedCollectionsShared = this._getTxLockedCollections(
+					tx, 'shared');
+				const lockedCollectionsExclusive = this._getTxLockedCollections(
+					tx, 'exclusive');
+				let lockedCollections, allLockedCollections;
+				switch (lockType) {
+				case 'shared':
+					lockedCollections = lockedCollectionsShared;
+					allLockedCollections = [
+						lockedCollectionsShared, lockedCollectionsExclusive
+					];
+					break;
+				case 'exclusive':
+					lockedCollections = lockedCollectionsExclusive;
+					allLockedCollections = [
+						lockedCollectionsExclusive
+					];
+				}
+
+				const namesToLock = new Set(recordTypeNames);
+				for (let name of recordTypeNames)
+					if (allLockedCollections.some(names => names.has(name)))
+						namesToLock.delete(name);
+				if (namesToLock.size === 0)
+					return resolve();
+
 				let sql = `SELECT name FROM ${TABLE} WHERE ` +
-					this._createFilterExpr(tx, recordTypeNames);
+					this._createFilterExpr(tx, namesToLock);
 				switch (lockType) {
 				case 'shared':
 					sql = tx.dbDriver.makeSelectWithLocks(
@@ -190,6 +245,8 @@ class DBTableRecordCollectionsMonitor {
 				log(`(tx #${tx.id}) executing SQL: ${sql}`);
 				tx.dbDriver.executeQuery(tx.connection, sql, {
 					onSuccess() {
+						for (let n of namesToLock)
+							lockedCollections.add(n);
 						resolve();
 					},
 					onError(err) {
@@ -199,7 +256,7 @@ class DBTableRecordCollectionsMonitor {
 				});
 			} catch (err) {
 				common.error(
-					'error querying record collection version info table', err);
+					'error querying record collections monitor table', err);
 				reject(err);
 			}
 		}));
@@ -237,6 +294,37 @@ class DBTableRecordCollectionsMonitor {
 		return 'name IN (' + res.map(
 			v => tx.dbDriver.stringLiteral(v)).join(', ') + ')';
 	}
+
+	/**
+	 * Get set of locked collections for the transaction and the lock type.
+	 *
+	 * @private
+	 * @param {module:x2node-dbos~Transaction} tx The transaction handler.
+	 * @param {string} lockType Lock type, "shared" or "exclusive".
+	 * @returns {Set.<string>} The locked collection names. Returns
+	 * <code>undefined</code> if the <code>lockType</code> argument anything else
+	 * than a string "shared" or "exclusive".
+	 */
+	_getTxLockedCollections(tx, lockType) {
+
+		let lockedCollectionsSymbol;
+		switch (lockType) {
+		case 'shared':
+			lockedCollectionsSymbol = LOCKED_SHARED;
+			break;
+		case 'exclusive':
+			lockedCollectionsSymbol = LOCKED_EXCLUSIVE;
+		}
+
+		let lockedCollections;
+		if (lockedCollectionsSymbol) {
+			lockedCollections = tx[lockedCollectionsSymbol];
+			if (!lockedCollections)
+				lockedCollections = tx[lockedCollectionsSymbol] = new Set();
+		}
+
+		return lockedCollections;
+	}
 }
 
 
@@ -259,7 +347,8 @@ exports.assignTo = function(dboFactory, ds) {
 			try {
 				let lastSql;
 				dboFactory.dbDriver.createVersionTableIfNotExists(
-					con, TABLE, {
+					con, TABLE, dboFactory.recordTypes.definedRecordTypeNames,
+					{
 						trace(sql) {
 							lastSql = sql;
 							log(`executing SQL: ${sql}`);
@@ -278,8 +367,8 @@ exports.assignTo = function(dboFactory, ds) {
 				);
 			} catch (err) {
 				common.error(
-					'error creating record collections version info table', err);
-				ds.releaseConnection(con, err);
+					'error initializing record collections monitor table', err);
+				ds.releaseConnection(con);
 				reject(err);
 			}
 		}),
