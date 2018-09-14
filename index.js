@@ -103,7 +103,7 @@ class DBTableRecordCollectionsMonitor {
 				let lastSql;
 				ctx.dbDriver.updateVersionTable(
 					ctx.connection, TABLE, Array.from(recordTypeNames),
-					ctx.executedOn.toISOString(), {
+					ctx.executedOn, {
 						trace(sql) {
 							lastSql = sql;
 							ctx.log(
