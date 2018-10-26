@@ -29,7 +29,7 @@
     "x2node-common": "^1.5.1"
   },
   "peerDependencies": {
-    "x2node-dbos": "^1.8.0"
+    "x2node-dbos": "^1.8.1"
   },
   "devDependencies": {
     "eslint": "^5.6.1"
